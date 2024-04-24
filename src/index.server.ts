@@ -10,6 +10,7 @@ _G["bladeball"] = true;
  * Last updated: Feb. 14, 2024
  ************************************************************/
 const RADIUS = 17.5;
+const HEIGHT = 10;
 const COMPENSATION = 200 / 1000; // 140ms (in seconds)
 
 /************************************************************
@@ -93,45 +94,6 @@ class Bin {
 	}
 }
 
-function evaluateIntercept(
-	x: number,
-	y: number,
-	z: number,
-	vx: number,
-	vy: number,
-	vz: number,
-	R: number,
-): number | undefined {
-	const a = vx ** 2 + vy ** 2 + vz ** 2;
-	const b = 2 * (vx * x + vy * y + vz * z);
-	const c = x ** 2 + y ** 2 + z ** 2 - R ** 2;
-
-	const discriminant = b ** 2 - 4 * a * c;
-	if (discriminant < 0) return;
-
-	const sqrtDiscriminant = math.sqrt(discriminant);
-	const denominator = 2 * a;
-
-	const t0 = (-b - sqrtDiscriminant) / denominator;
-	if (t0 > 0) return t0;
-
-	const t1 = (-b + sqrtDiscriminant) / denominator;
-	if (t1 > 0) return t1;
-
-	return undefined;
-}
-
-function calculateRadius(x: number, z: number, vx: number, vz: number, t: number) {
-	const dx = x + vx * t;
-	const dz = z + vz * t;
-	return math.sqrt(dx ** 2 + dz ** 2);
-}
-
-function calculateHeight(y: number, vy: number, ay: number, t: number) {
-	const dy = y + vy * t + 0.5 * ay * t ** 2;
-	return dy;
-}
-
 function evaluate(
 	x: number,
 	y: number,
@@ -143,44 +105,45 @@ function evaluate(
 	R: number,
 	H: number,
 ) {
-	const vx_sq = vx ** 2;
-	const vz_sq = vz ** 2;
+	const D = H / 2;
 	const R_sq = R ** 2;
-	const discriminant = R_sq * (vx_sq + vz_sq) - (vx * z - vz * x) ** 2;
-	if (discriminant > 0) {
-		const a = vx_sq + vz_sq;
-		const b = -vx * x - vz * z;
-		const c = math.sqrt(discriminant);
+	if (-D <= y && y <= D && x ** 2 + z ** 2 <= R_sq) return 0;
 
-		const t0 = (b - c) / a;
-		const t1 = (b + c) / a;
+	const vx_sq = vx ** 2;
+	const vy_sq = vy ** 2;
+	const vz_sq = vz ** 2;
+	const vxz_magnitude_sq = vx_sq + vz_sq;
 
-		if (t0 > 0) {
-			const dy = y + vy * t0 + 0.5 * ay * t0 ** 2;
-			if (dy < H) return t0;
-		} else if (t1 > 0) {
-			const dy = y + vy * t1 + 0.5 * ay * t1 ** 2;
-			if (dy < H) return t1;
-		}
+	// Radius intersect calculations
+	const discriminant = R_sq * vxz_magnitude_sq - (vx * z - vz * x) ** 2;
+	if (discriminant < 0) return;
+	const b = -vx * x - vz * z;
+	const t0 = (b - math.sqrt(discriminant)) / vxz_magnitude_sq;
+	if (t0 > 0) {
+		const height = y + vy * t0 + 0.5 * ay * t0 ** 2;
+		if (-D <= height && height <= D) return t0;
 	}
 
-	const postive_discriminant = ay * H + 0.5 * vy ** 2;
-	if (postive_discriminant > 0) {
-		const root = math.sqrt(postive_discriminant);
-		const t0 = (-vy + root) / ay;
-		const t1 = (-vy - root) / ay;
-		if (t0 > 0) {
-			const r = calculateRadius(x, z, vx, vz, t0);
-			if (r < R) return t0;
-		}
-	}
+	// Height intersect calculations
+	let t1: number | undefined;
 
-	const negative_discriminant = -ay * H + 0.5 * vy ** 2;
-	if (negative_discriminant > 0) {
-		const root = math.sqrt(negative_discriminant);
-		const t0 = (-vy + root) / ay;
-		const t1 = (-vy - root) / ay;
+	const min = math.max(t0, 0);
+	const upper_discriminant = vy_sq + 2 * ay * (D - y);
+	const lower_discriminant = vy_sq - 2 * ay * (D + y);
+	if (upper_discriminant > 0) {
+		const root = math.sqrt(upper_discriminant);
+		const t = (-vy - root) / ay;
+		if (t > min) t1 = t;
 	}
+	if (lower_discriminant > 0) {
+		const root = math.sqrt(lower_discriminant);
+		const t = (-vy + root) / ay;
+		if ((t1 !== undefined && t < t1) || t > min) t1 = t;
+	}
+	if (t1 === undefined) return;
+	const radius_sq = (x + vx * t1) ** 2 + (z + vz * t1) ** 2;
+	if (radius_sq > R_sq) return;
+	return t1;
 }
 
 /************************************************************
@@ -381,17 +344,19 @@ namespace ParryController {
 
 				const velocity = instance.AssemblyLinearVelocity.sub(motion);
 
-				const intercept = evaluateIntercept(
+				const intercept = evaluate(
 					position.X,
 					position.Y,
 					position.Z,
 					velocity.X,
 					velocity.Y,
 					velocity.Z,
+					Workspace.Gravity,
 					RADIUS,
+					HEIGHT,
 				);
 				if (intercept === undefined) return;
-				if (intercept > COMPENSATION) return;
+				if (intercept) return;
 				return useParry(ball);
 			});
 		});
