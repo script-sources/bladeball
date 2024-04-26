@@ -9,9 +9,9 @@ _G["bladeball"] = true;
  * Description: User-defined settings and configurations
  * Last updated: Feb. 14, 2024
  ************************************************************/
-const RADIUS = 17.5;
-const HEIGHT = 10;
-const COMPENSATION = 200 / 1000; // 140ms (in seconds)
+const RADIUS = 21;
+const HEIGHT = 21;
+const COMPENSATION = 200 / 1000; // (ms / 1000)
 
 /************************************************************
  * VARIABLES
@@ -19,6 +19,8 @@ const COMPENSATION = 200 / 1000; // 140ms (in seconds)
  * Last updated: Feb. 14, 2024
  ************************************************************/
 const LocalPlayer = Players.LocalPlayer;
+
+let gravity = Workspace.Gravity;
 
 /************************************************************
  * UTILITIES
@@ -94,7 +96,7 @@ class Bin {
 	}
 }
 
-function evaluate(
+function evaluateCylindricalCollision(
 	x: number,
 	y: number,
 	z: number,
@@ -146,6 +148,19 @@ function evaluate(
 	return t1;
 }
 
+function bindToChild(parent: Instance, name: string, callback: (child: Instance) => void) {
+	const child = parent.FindFirstChild(name);
+	if (child) callback(child);
+	else {
+		const connection = parent.ChildAdded.Connect((child) => {
+			if (child.Name === name) {
+				connection.Disconnect();
+				callback(child);
+			}
+		});
+	}
+}
+
 /************************************************************
  * COMPONENTS
  * Description: Classes for specific entities/objects
@@ -165,7 +180,7 @@ class BaseComponent<T extends Instance> {
 }
 
 class BallComponent extends BaseComponent<BasePart> {
-	public static active = new Map<BasePart, BallComponent>();
+	public static active: BallComponent | undefined;
 
 	private active = false;
 	private target = "";
@@ -183,10 +198,9 @@ class BallComponent extends BaseComponent<BasePart> {
 			instance.GetAttributeChangedSignal("target").Connect(() => this.updateTarget()),
 		);
 		bin.batch(
-			() => BallComponent.active.delete(instance),
+			() => BallComponent.active === this && (BallComponent.active = undefined),
 			instance.Destroying.Connect(() => this.destroy()),
 		);
-		BallComponent.active.set(instance, this);
 	}
 
 	private updateTarget() {
@@ -197,6 +211,8 @@ class BallComponent extends BaseComponent<BasePart> {
 	private updateActive() {
 		this.isHit = false;
 		this.active = this.instance.GetAttribute("realBall") === true;
+		if (this.active) BallComponent.active = this;
+		else if (BallComponent.active === this) BallComponent.active = undefined;
 	}
 
 	public debounce() {
@@ -293,12 +309,15 @@ class PlayerComponent extends BaseComponent<Player> {
  * Last updated: Feb. 14, 2024
  ************************************************************/
 namespace ComponentController {
-	const BallFolder = Workspace.WaitForChild("Balls", 10) as Folder;
-
 	const onBallAdded = (instance: Instance) => {
 		if (instance.IsA("Part")) {
 			new BallComponent(instance);
 		}
+	};
+
+	const onBallContainerAdded = (container: Instance) => {
+		container.GetChildren().forEach((instance) => task.spawn(onBallAdded, instance));
+		container.ChildAdded.Connect(onBallAdded);
 	};
 
 	const onPlayerAdded = (instance: Player) => {
@@ -307,12 +326,20 @@ namespace ComponentController {
 
 	/** @hidden */
 	export function __init() {
-		BallFolder.GetChildren().forEach((instance) => task.spawn(onBallAdded, instance));
-		BallFolder.ChildAdded.Connect(onBallAdded);
+		bindToChild(Workspace, "Balls", onBallContainerAdded);
 
 		Players.GetPlayers().forEach((instance) => task.spawn(onPlayerAdded, instance));
 		Players.PlayerAdded.Connect(onPlayerAdded);
 		Players.PlayerRemoving.Connect((instance) => PlayerComponent.active.get(instance)?.destroy());
+	}
+}
+
+namespace VariableController {
+	export function __init() {
+		gravity = Workspace.Gravity;
+		Workspace.GetAttributeChangedSignal("Gravity").Connect(() => {
+			gravity = Workspace.Gravity;
+		});
 	}
 }
 
@@ -329,36 +356,39 @@ namespace ParryController {
 	export function __init() {
 		const player = PlayerComponent.active.get(LocalPlayer)!;
 		RunService.Heartbeat.Connect(() => {
+			const ball = BallComponent.active;
+			if (!ball) return;
+
 			const character = player.getCharacter();
 			if (!character) return;
 			const name = player.getName();
 			const root = character.root;
 			const origin = root.Position;
 			const motion = root.AssemblyLinearVelocity.mul(Vector2D);
-			BallComponent.active.forEach((ball, instance) => {
-				if (!ball.canParry()) return;
-				if (ball.getTarget() !== name) return;
 
-				const position = instance.Position.sub(origin);
-				if (position.Magnitude < RADIUS) return useParry(ball);
+			const instance = ball.instance;
+			if (!ball.canParry()) return;
+			if (ball.getTarget() !== name) return;
 
-				const velocity = instance.AssemblyLinearVelocity.sub(motion);
+			const position = instance.Position.sub(origin);
+			if (position.Magnitude < RADIUS) return useParry(ball);
 
-				const intercept = evaluate(
-					position.X,
-					position.Y,
-					position.Z,
-					velocity.X,
-					velocity.Y,
-					velocity.Z,
-					Workspace.Gravity,
-					RADIUS,
-					HEIGHT,
-				);
-				if (intercept === undefined) return;
-				if (intercept) return;
-				return useParry(ball);
-			});
+			const velocity = instance.AssemblyLinearVelocity.sub(motion);
+
+			const intercept = evaluateCylindricalCollision(
+				position.X,
+				position.Y,
+				position.Z,
+				velocity.X,
+				velocity.Y,
+				velocity.Z,
+				gravity,
+				RADIUS,
+				HEIGHT,
+			);
+			if (intercept === undefined) return;
+			if (intercept < COMPENSATION) return;
+			return useParry(ball);
 		});
 	}
 }
@@ -369,6 +399,7 @@ namespace ParryController {
  * Last updated: Feb. 14, 2024
  ************************************************************/
 ComponentController.__init();
+VariableController.__init();
 ParryController.__init();
 
 export = "Initialized Successfully";
